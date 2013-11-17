@@ -1,0 +1,3 @@
+trigger chatterNotify on Lunch_Match__c (after insert) {
+    LunchChatter.notifyLunchers(Trigger.new);
+}

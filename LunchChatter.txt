@@ -1,0 +1,184 @@
+public class LunchChatter {
+
+    //Empty constructor
+    public LunchChatter() {
+    }
+
+    //create a new luncher when someone joins the lunch chatter group
+    public static void newLuncherOnGroupJoin(List<CollaborationGroupMember> allNewMembers) {
+        //get the members that joined the lunch match chatter group
+        List<CollaborationGroupMember> members = new List<CollaborationGroupMember>();
+        for (CollaborationGroupMember cgm : allNewMembers) {
+            if (cgm.CollaborationGroupId == LunchChatter.lunchGroupId) {
+                members.add(cgm);
+            }
+        }
+
+        if (!members.isEmpty()) {
+            System.debug('New members in the lunch group were found.');
+            
+            //Maybe some had participated in the lunch match app before.
+            //If so, we need to find those Luncher__c records and mark them active
+            List<Luncher__c> allLunchers = [SELECT Id, User__c, Status__c FROM Luncher__c];
+            //make a map of user id > status, so we can easily see if we need to update a luncher or make a new one
+            Map<Id, String> idToStatus = new Map<Id, String>();
+            for (Luncher__c l : allLunchers) {
+                idToStatus.put(l.User__c, l.Status__c);
+            }
+
+            List<Luncher__c> lunchersToUpsert = new List<Luncher__c>(); 
+            List<Id> userIdsForNewLunchers = new List<Id>();
+            List<Id> userIdsForLunchersToActivate = new List<Id>();
+            Set<Id> keySet = idToStatus.keySet();
+            //for each member, figure out if we need to create a new luncher or update an existing one
+            for (CollaborationGroupMember cgm : members) {
+                if (keySet.contains(cgm.MemberId)) {
+                    userIdsForLunchersToActivate.add(cgm.MemberId);
+                } else {
+                    userIdsForNewLunchers.add(cgm.MemberId);
+                }
+            }
+            
+            //create new lunchers and add them to the upsert list
+            if (!userIdsForNewLunchers.isEmpty()) {
+                for (User u : [SELECT Id, Name FROM User WHERE Id IN :userIdsForNewLunchers]) {
+                    Luncher__c newLuncher = new Luncher__c(
+                            Name = u.Name,
+                            Status__c = 'Active',
+                            User__c = u.Id);
+                    lunchersToUpsert.add(newLuncher);
+                }
+            }
+            
+            //get existing lunchers to update and add them to the upsert list
+            if (!userIdsForLunchersToActivate.isEmpty()) {
+                for (Luncher__c l : [SELECT Id, Status__c, User__c FROM Luncher__c where User__c IN :userIdsForLunchersToActivate]) {
+                    l.Status__c = 'Active';
+                    lunchersToUpsert.add(l);
+                }
+            }
+            
+            //insert new lunchers, if any were created
+            if (!lunchersToUpsert.isEmpty()) {
+                upsert lunchersToUpsert;
+                System.debug('New lunchers were upserted: ' + lunchersToUpsert);
+            } else {
+                System.debug('No lunchers were upserted.');
+            }
+            
+        } else {
+            System.debug('None of the new chatter members are in the lunchGroup.');
+        }
+    }
+    
+    
+    //mark a luncher inactive when someone leaves the lunch chatter group
+    public static void makeLuncherInactiveOnGroupLeave(List<CollaborationGroupMember> allDeleted) {
+        //get the members that are part of the chatter group you actually care about
+        List<Id> delUserIds = new List<Id>();
+        for (CollaborationGroupMember cgm : allDeleted) {
+            if (cgm.CollaborationGroupId == LunchChatter.lunchGroupId) {
+                delUserIds.add(cgm.MemberId);
+            }
+        }
+        
+        //set status inactive for lunchers with delUserIds
+        if (!delUserIds.isEmpty()) {
+            List<Luncher__c> lunchersToUpdate = new List<Luncher__c>();
+            
+            for (Luncher__c l : [SELECT Id, Status__c, User__c FROM Luncher__c WHERE User__c IN :delUserIds]) {
+                l.Status__c = 'Inactive';
+                lunchersToUpdate.add(l);
+            }
+            
+            if (!lunchersToUpdate.isEmpty()) {
+                update lunchersToUpdate;
+            }
+        } else {
+            System.debug('No lunchers were inactivated when a user left a group.');
+        }
+    }
+    
+    
+    //given a list of new Lunch Matches, post to each picker's chatter wall
+    public static void notifyLunchers(List<Lunch_Match__c> matches) {
+    
+        //construct maps of match to time picker and match to loc picker
+        Map<Id, Id> matchToLuncherLoc = new Map<Id, Id>();
+        Map<Id, Id> matchToLuncherTime = new Map<Id, Id>();
+
+        for (Lunch_Match__c lm : matches) {
+            matchToLuncherLoc.put(lm.Id, lm.Location_Picker__c);
+            matchToLuncherTime.put(lm.Id, lm.Time_Picker__c);
+        }
+        
+        //construct a map of luncher id to user id
+        List<Luncher__c> lunchers = [SELECT Id, User__c, Name, Receive_Chatter_Notifications__c
+                                     FROM Luncher__c WHERE Id IN :matchToLuncherLoc.values()
+                                                              OR Id IN :matchToLuncherTime.values()]; 
+        Map<Id, Luncher__c> luncherIdToLuncherMap = new Map<Id, Luncher__c>();
+        for (Luncher__c l : lunchers) {
+            luncherIdToLuncherMap.put(l.Id, l);
+        }
+        
+        List<FeedItem> feedItems = new List<FeedItem>();
+        
+        //build the chatter messages
+        for (Lunch_Match__c match : matches) {
+        	Luncher__c locPicker = luncherIdToLuncherMap.get(matchToLuncherLoc.get(match.Id));
+        	if (locPicker.Receive_Chatter_Notifications__c) { 
+                FeedItem locFeedItem = new FeedItem();
+                locFeedItem.ParentId = locPicker.User__c;
+                locFeedItem.Body = buildLunchNoticeBody(System.Label.Location_FI, 
+                        luncherIdToLuncherMap.get(matchToLuncherTime.get(match.Id)));
+                locFeedItem.LinkUrl = getSalesforceUrl(match.Id);
+                feedItems.add(locFeedItem);
+        	}
+        	
+        	Luncher__c timePicker = luncherIdToLuncherMap.get(matchToLuncherTime.get(match.Id));
+            if (timePicker.Receive_Chatter_Notifications__c) {
+                FeedItem timeFeedItem = new FeedItem();
+                timeFeedItem.parentId = timePicker.User__c;
+                timeFeedItem.Body = buildLunchNoticeBody(System.Label.Time_FI,
+                        luncherIdToLuncherMap.get(matchToLuncherLoc.get(match.Id)));
+                timeFeedItem.LinkUrl = getSalesforceUrl(match.Id);
+                feedItems.add(timeFeedItem); 
+            }
+        }
+        
+        insert feedItems;
+    }
+    
+    
+    //get the url for the Lunch Match for this org
+    private static String getSalesforceUrl(Id id) {
+        return URL.getSalesforceBaseUrl().toExternalForm() + '/' + id;
+    }
+    
+    
+    //construct the body of the chatter message to go on the location picker's wall
+    private static String buildLunchNoticeBody(String baseLabel, Luncher__c timePicker) {
+        String body = baseLabel;
+        body += ' ';
+        body += timePicker.Name;
+        body += '\n\n';
+        body += System.Label.Link_FI;
+        body += '\n\n';
+        body += System.Label.Group_Link;
+        body += ' ';
+        body += getSalesforceUrl(lunchGroupId);
+        return body;
+    }
+    
+    
+    //create a feeditem for a user's wall with given userId and body
+    private static FeedItem buildFeedItem(Id userId, String feedBody) {
+        FeedItem f = new FeedItem();
+        f.ParentId = userId;
+        f.Body = feedBody;
+        return f;
+    }
+
+    //Hardcoding ids is hacky and not advised, but it's a quick way to get a demo working. :)
+    public static Id lunchGroupId = '0F9i0000000074u';
+}

@@ -1,0 +1,49 @@
+/**
+ * A container class for convenience, representing a single Luncher__c, 
+ * and the set of other Luncher__c's that they have already been matched with,
+ * based on existing Lunch_Match__c records.
+ */
+
+global class LuncherWithHistory implements Comparable {
+
+    public Id luncherId;       //id of this luncher
+    private Set<Id> historySet; //set of ids of other lunchers this luncher has already been matched with
+    
+    
+    //constructor for luncher that does have match history
+    public LuncherWithHistory(Id luncherId, Set<Id> historySet) {
+        this.luncherId = luncherId;
+        this.historySet = historySet;
+    }
+    
+    //constructor for luncher with no history
+    public LuncherWithHistory(Id luncherId) {
+        this.luncherId = luncherId;
+        this.historySet = new Set<Id>();
+    }
+
+    //returns true if this luncher has already been matched with other luncher
+    public boolean hasPrevMatch(Id otherLuncher) {
+        return historySet.contains(otherLuncher);
+    }
+
+    //construct a list of lunchers with history from a map of Luncher Id to
+    //set of luncher ids that this luncher has already been matched with
+    public static List<LuncherWithHistory> convertFromMap(Map<Id,Set<Id>> historyMap) {
+        List<LuncherWithHistory> retList = new List<LuncherWithHistory>();
+        Set<Id> keyset = historyMap.keySet();
+        for (Id luncherId : keyset) {
+            retList.add(new LuncherWithHistory(luncherId, historyMap.get(luncherId)));
+        }
+        return retList;
+    }
+    
+    // CompareTo() will return 0 if ids are equal, else, will return 1 if this
+    // LuncherWithHistory's group size is larger
+    global Integer compareTo(Object compareTo) {
+        LuncherWithHistory compareToLuncher = (LuncherWithHistory)compareTo;
+        if (luncherId == compareToLuncher.luncherId) return 0;
+        if (historySet.size() > compareToLuncher.historySet.size()) return 1;
+        return -1;
+    }
+}

@@ -1,0 +1,16 @@
+global class scheduledLunchMatch implements Schedulable {
+
+    global void execute(SchedulableContext ctx) {
+        goMatchGo();
+    }
+
+    //shortcut for demos, to perform a match on command
+    public void goMatchGo() {
+    	datetime lunchTime = datetime.now();
+
+        LunchMatcher lm = new LunchMatcher();
+        boolean matchSucceeded = lm.performScheduledMatch(lunchTime);
+        System.assertEquals(true, matchSucceeded);
+    }
+
+}

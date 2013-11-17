@@ -1,0 +1,9 @@
+trigger addNewLunchers on CollaborationGroupMember (after insert, after delete) {
+    if (Trigger.isInsert) {
+	    // When a user joins the group, create a Luncher__c record for them
+        LunchChatter.newLuncherOnGroupJoin(Trigger.new);
+    } else if (Trigger.isDelete) {
+        // When a user leaves the group, mark the Luncher__c record inactive
+        LunchChatter.makeLuncherInactiveOnGroupLeave(Trigger.old);
+    }
+}

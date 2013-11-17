@@ -1,0 +1,206 @@
+global class LunchMatcher { 
+
+    //constructor    
+    public LunchMatcher() {
+    }
+
+    //The workhorse of the app
+    public boolean performScheduledMatch(DateTime lunchDate) {
+        
+        //get all the active lunchers
+        List<Luncher__c> activeLunchers = [SELECT Id, Name from Luncher__c WHERE Status__c = 'Active'];
+        System.debug('Active lunchers are: ' + activeLunchers);
+        Map<Id, Luncher__c> luncherMap = new Map<Id, Luncher__c>();
+        
+        //get all the inactive lunchers
+        List<Luncher__c> inactiveLunchers = [SELECT Id FROM Luncher__c WHERE Status__c = 'Inactive'];
+        System.debug('Inactive lunchers are: ' + inactiveLunchers);
+        
+        //get all the previous matches
+        List<Lunch_Match__c> prevMatches = [SELECT Id, Location_Picker__c, Time_Picker__c from Lunch_Match__c];
+        
+        //construct a list of lunchers with history that holds all the previous matches and lunchers with no matches
+        Map<Id, Set<Id>> prevMatchMap = getPrevMatchMap(prevMatches, activeLunchers, inactiveLunchers);
+        List<LuncherWithHistory> lunchersWithHistory = LuncherWithHistory.convertFromMap(prevMatchMap);
+        
+        //do the matching
+        List<Id> thirdWheelIds = new List<Id>(); //holds any unmatched lunchers
+        List<Lunch_Match__c> newLunchMatches = matchup(lunchersWithHistory, lunchDate, thirdWheelIds);
+        
+        insert newLunchMatches;
+        
+        //handle the thirdwheels
+        handleThirdWheels(thirdWheelids, newLunchMatches);
+        
+        return true;
+    }
+    
+    
+    //Go through all the active lunchers and assign them to a new match,
+    // matching the ones with the most previous matches first.
+    private List<Lunch_Match__c> matchup(List<LuncherWithHistory> lunchersWithHistory, DateTime lunchDate, List<Id> thirdWheelIds) {
+
+        //sort the lunchers, such that those with the most previous matches come first
+        //(secret sauce for getting the most matches out of them) //TODO check algorithms txtbk
+        lunchersWithHistory.sort();
+
+        //construct a set of ids of unmatched lunchers
+        Set<Id> unmatchedIds = new Set<Id>();
+        for (LuncherWithHistory lwh : lunchersWithHistory) {
+            unmatchedIds.add(lwh.luncherId);
+        }
+        
+        //the list of Lunch Matches that will be returned by this method
+        List<Lunch_Match__c> newMatches = new List<Lunch_Match__c>();
+        
+        for (LuncherWithHistory lwh : lunchersWithHistory) {
+            if (unmatchedIds.contains(lwh.luncherId) && unmatchedIds.size() > 2 ) {
+                //then this is an unmatched luncher. Find them a partner
+                Id partnerId = getPartner(lunchersWithHistory, unmatchedIds, lwh.luncherId);
+                
+                if (partnerId != null) {
+                    //construct a new match
+                    Lunch_Match__c lm = new Lunch_Match__c(
+                        Location_Picker__c = lwh.luncherId,
+                        Time_Picker__c = partnerId,
+                        Lunch_Time__c = lunchDate);
+                    //add match to list of matches to insert
+                    newMatches.add(lm);
+                    unmatchedIds.remove(partnerId);
+                    unmatchedIds.remove(lwh.luncherId);
+                } else {
+                	//there are no available lunchers to match with this person this week
+                	//they'll be added as a third wheel to another lunch
+                    System.debug('No partner was found for luncher with id' + lwh.luncherId);
+                    thirdWheelIds.add(lwh.luncherId);
+                }
+            } else if (unmatchedIds.contains(lwh.luncherId)) {
+                //then this is the last luncher, and they'll be all alone...
+                System.debug('This seems to be the last luncher. Their id is ' + lwh.luncherId 
+                                + '. Unmatched set size is ' + unmatchedIds.size());
+                thirdwheelIds.add(lwh.luncherId);
+            }
+        }
+        
+        return newMatches;
+    }
+    
+    
+    //Construct a map of Luncher__c Id -> Set<Luncher__c Id> that they've already lunched with,
+    //based on existing Lunch_Match__c records
+    private Map<Id,Set<Id>> getPrevMatchMap(List<Lunch_Match__c> prevMatches, 
+                                            List<Luncher__c> activeLunchers, 
+                                            List<Luncher__c> inactiveLunchers) {
+        Map<Id, Set<Id>> prevMatchMap = new Map<Id, Set<Id>>();
+        
+        //add match history from previous matches
+        for (Lunch_Match__c lm : prevMatches) {
+            Id luncherId1 = lm.Location_Picker__c;
+            Id luncherId2 = lm.Time_Picker__c;
+            
+            //add luncher2 to luncher1's set of previous matches
+            if (prevMatchMap.get(luncherId1) == null) {
+                prevMatchMap.put(luncherId1, new Set<Id>());
+            }
+            prevMatchMap.get(luncherId1).add(luncherId2);
+            
+            //add luncher1 to luncher2's set of previous matches
+            if (prevMatchMap.get(luncherId2) == null) {
+                prevMatchMap.put(luncherId2, new Set<Id>());
+            }
+            prevMatchMap.get(luncherId2).add(luncherId1);
+        }
+        
+        System.debug('After making history map, map contains keys: ' + prevMatchMap.keySet()); 
+        
+        //make sure every luncher is in the map, even those without a history
+        Set<Id> keySet = prevMatchMap.keySet();
+        for (Luncher__c l : activeLunchers) {
+            if (!keySet.contains(l.Id)) {
+                prevMatchMap.put(l.Id, new Set<Id>());
+                System.debug('Added luncher with no history to map: ' + l.Id);
+            }
+        }
+        
+        //make sure that inactive lunchers are NOT in the map
+        for (Luncher__c l : inactiveLunchers) {
+            if (keySet.contains(l.Id)) {
+                prevMatchMap.remove(l.Id);
+                System.debug('Removed inactive luncher ' + l.Id + ' from map.');
+            }
+        }
+        
+        return prevMatchMap;
+    }
+
+
+    //Get a partner from the unmatched 
+    //Return null if no suitable match can be found
+    private Id getPartner(List<LuncherWithHistory> lunchers, Set<Id> unmatched, Id partnerId) {
+        for (LuncherWithHistory lwh : lunchers) {
+            if (unmatched.contains(lwh.luncherId) && lwh.luncherId != partnerId && !lwh.hasPrevMatch(partnerId)) {
+                return lwh.luncherId;
+            }
+        }
+        //if we reached this point, no suitable match was found, so return null
+        return null;
+    }
+    
+    
+    //Add third wheels to existing lunches, or make them into one big lunch if there are enough of them
+    private List<Third_Wheel__c> handleThirdWheels(List<Id> extraLuncherIds, List<Lunch_Match__c> newMatches) {
+    
+        List<Third_Wheel__c> newThirdWheels = new List<Third_Wheel__c>();
+        
+        if (extraLuncherIds.size() == 1 && !newMatches.isEmpty()) {
+            //only one third wheel? Add them to an existing lunch. 
+            //choose the last one, arbitrarily
+            Lunch_Match__c matchWithWheel = newMatches.get(newMatches.size() - 1);
+            
+            Third_Wheel__c wheel = new Third_Wheel__c(
+                    Luncher__c = extraLuncherIds.get(0), 
+                    Lunch_Match__c = matchWithWheel.Id);
+            newThirdWheels.add(wheel);
+            
+            matchWithWheel.Description__c = System.Label.Desc_With_Wheel;
+            update matchWithWheel;
+            
+        } else if (extraLuncherIds.size() > 1) {
+            //more than one extra luncher? Give them their own party lunch
+            
+            //Get the index of the last luncher.
+            //We're going to start with the last one, to help avoid the case 
+            //where 1 person is always the party lunch organizer.
+            Integer i = extraLuncherIds.size() - 1; 
+            Id locationPickerId = extraLuncherIds.get(i);
+            i--;
+            Id timePickerId = extraLuncherIds.get(i);
+            i--;
+            System.assert(locationPickerId != null && timePickerId != null, 'Developer error: no organizers for party lunch.');
+            Lunch_Match__c partyLunch = new Lunch_Match__c(
+                    Location_Picker__c = locationPickerId,
+                    Time_Picker__c = timePickerId,
+                    Description__c = System.Label.Desc_Party,
+                    Party_Lunch__c = true);
+            insert partyLunch;
+            
+            //still third wheels? add them to the party lunch
+            while (i >= 0) {
+                Third_Wheel__c wheel = new Third_Wheel__c(
+                        Luncher__c = extraLuncherIds.get(i),
+                        Lunch_Match__c = partyLunch.Id);
+                newThirdWheels.add(wheel);
+                i--;
+            }
+        } else {
+            //there was only 1 luncher, and there was no existing lunch to attach them to
+            System.debug('Tried to handle third wheels, but there was only 1 luncher and 0 newMatches.');
+        }
+        
+        //if new third wheels were created, insert them!
+        if (newThirdWheels.size() > 0) {
+            insert newThirdWheels;
+        }
+        return newThirdWheels;
+    } 
+}
